@@ -57,13 +57,14 @@ class Tensor:
 
         """
         if self.grad is None:
-            self.grad = {index:val for index, val in enumerate(self.data)}
-            for gs_index, tuple in enumerate(gs):
-                self.grad[tuple[0]] = np.add(self.grad[tuple[0]],tuple[1])
-        else:
-            if isinstance(self.grad, dict):
-                for gs_index, tuple in enumerate(gs):
-                    self.grad[tuple[0]] = np.add(self.grad[tuple[0]],tuple[1])
+            self.grad = {}
+
+        for idx, arr in gs:
+            if idx in self.grad.keys():
+                self.grad[idx] = self.grad[idx] + arr.copy()
+            else:
+                self.grad[idx] = arr.copy()
+
 
         ### Add your implementation below and comment the following line.
         #raise NotImplementedError
@@ -343,7 +344,7 @@ class OpTanh(Op):
         return res
 
     def backward(self):
-        x, res = self.get_ctx('a','res')
+        x, res = self.get_ctx('x','res')
         if res.grad is not None:
             g0 = (1 - res.data ** 2) * res.grad
             x.accumulate_grad(g0)
@@ -376,7 +377,7 @@ class OpAvg(Op):
     
     def forward(self, x: Tensor, xx: int):
         res = Tensor(x.data.mean(axis=xx))
-        self.store_ctx(x=x, ax=xx, ret=res)
+        self.store_ctx(x=x, xx=xx, res=res)
         return res
 
     def backward(self):
@@ -445,8 +446,8 @@ class Initializer:
         """
 
         ### Add your implementation below and comment the following line.
-        std = gain * math.sqrt(6.0 / (shape[0] + shape[1]))
-        return np.random.uniform(-std,std,shape)
+        limit = gain*math.sqrt(6/(shape[0]+shape[1]+1))
+        return np.random.uniform(-limit, limit, shape)
         #raise NotImplementedError
 
 class Model:
@@ -542,8 +543,40 @@ class MomentumTrainer(Trainer):
     """
 
     def __init__(self, model: Model, lrate=0.1, mrate=0.99):
-        ### Add your implementation below and comment the following line.
-        raise NotImplementedError
+        super().__init__(model)
+        self.lrate = lrate
+        self.mrate = mrate
+        self.mstats = None
+
+    def update(self):
+        lrate = self.lrate
+        mrate = self.mrate
+        if self.mstats is None:
+            self.mstats = self.clone_param_stats(self.model)
+        for idx in range(len(self.model.params)):
+            p = self.model.params[idx]
+            if p.grad is not None:
+                if isinstance(p.grad, dict):  # sparsely update to save time!
+                    self.update_sparse(p, p.grad, idx, lrate, mrate)
+                else:
+                    self.update_dense(p, p.grad, idx, lrate, mrate)
+
+            # clean grad
+            p.grad = None
+
+    def update_dense(self, p: Parameter, g: np.ndarray, idx: int, lrate: float, mrate: float):
+        self.mstats[idx] = mrate*self.mstats[idx] + (1-mrate)*g
+        p.data -= lrate*self.mstats[idx]
+
+    def update_sparse(self, p: Parameter, gs: Dict[int, np.ndarray], idx: int, lrate: float, mrate: float):
+
+        for i in range(self.mstats[idx].shape[0]) :
+            if i in gs.keys():
+                self.mstats[idx][i] = mrate * self.mstats[idx][i] + (1 - mrate) * gs[i]
+            else:
+                self.mstats[idx][i] = mrate * self.mstats[idx][i]
+
+        p.data -= lrate * self.mstats[idx]
 
 
 ### Graph computation functions
