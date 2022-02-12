@@ -42,9 +42,13 @@ class Tensor:
         accumulate_grad accepts one dense np.ndarray and accumulate to the Tensor's dense gradients (np.ndarray).
 
         """
+        if self.grad is not None:
+            self.grad += g
+        else:
+            self.grad = g
 
         ### Add your implementation below and comment the following line.
-        raise NotImplementedError
+        #raise NotImplementedError
 
 
     def accumulate_grad_sparse(self, gs: List[Tuple[int, np.ndarray]]) -> None:
@@ -52,9 +56,17 @@ class Tensor:
         accumulate_grad_sparse accepts a list of (index, np.ndarray) and accumulates them to the Tensor's simulated sparase gradients (dict). only for D2 lookup matrix!
 
         """
+        if self.grad is None:
+            self.grad = {index:val for index, val in enumerate(self.data)}
+            for gs_index, tuple in enumerate(gs):
+                self.grad[tuple[0]] = np.add(self.grad[tuple[0]],tuple[1])
+        else:
+            if isinstance(self.grad, dict):
+                for gs_index, tuple in enumerate(gs):
+                    self.grad[tuple[0]] = np.add(self.grad[tuple[0]],tuple[1])
 
         ### Add your implementation below and comment the following line.
-        raise NotImplementedError
+        #raise NotImplementedError
 
 
     def get_dense_grad(self):
@@ -106,7 +118,8 @@ class Op:
     """
     Operation class implements an operation that is part of a ComputationGraph.
 
-    Op.ctx: this field is a data field that is populated during the forward operation to store all the relevant values (input, output, intermediate) that must be used in backward to calculate gradients. We provide two helper methods Op.store_ctx() and Op.get_ctx() to do these, but please feel free to store things in your own way, we will not check Op.ctx.
+    Op.ctx: this field is a data field that is populated during the forward operation to store all the relevant values (input, output, intermediate) that must be used in backward to calculate gradients. 
+    We provide two helper methods Op.store_ctx() and Op.get_ctx() to do these, but please feel free to store things in your own way, we will not check Op.ctx.
 
     Op.forward() and Op.backward(): these are the forward and backward methods calculating the operation itself and its gradient.
 
@@ -283,28 +296,95 @@ class OpAdd(Op):
 class OpLookup(Op):
     def __init__(self):
         ### Add your implementation below and comment the following line.
-        raise NotImplementedError
+        super().__init__()
+    
+    def forward(self, x: Tensor, id: List[int]):
+        if x.data is not None:
+            res = Tensor(x.data[id])
+        self.store_ctx(x=x, id=id, res = res)
+        return res
+
+    def backward(self):
+        x, id, res = self.get_ctx('x', 'id', 'res')
+        if(res.grad is not None):
+            g0 = [[index, value] for index, value in zip(id, res.grad)]
+            x.accumulate_grad_sparse(g0)
 
 class OpDot(Op):
     def __init__(self):
         ### Add your implementation below and comment the following line.
-        raise NotImplementedError
+        super().__init__()
+
+    def forward(self, x: Tensor, y: Tensor):
+        res = Tensor(np.matmul(x.data, y.data))
+        self.store_ctx(x=x, y=y, res = res)
+        return res
+
+    def backward(self):
+        x, y, res = self.get_ctx('x', 'y', 'res')
+        x_col, x_row = x.data.shape[1], x.data.shape[0]
+        if(res.grad is not None):
+            g0 = res.grad.reshape(x_row, 1)
+            t = y.data.reshape(1, x_col)
+            x_grad = np.matmul(g0, t)
+            y_grad = np.matmul(x.data.T, res.grad)
+
+            x.accumulate_grad(x_grad)
+            y.accumulate_grad(y_grad)
 
 class OpTanh(Op):
     def __init__(self):
         ### Add your implementation below and comment the following line.
-        raise NotImplementedError
+        super().__init__()
+
+    def forward(self, x:Tensor):
+        res = Tensor(np.tanh(x.data))
+        self.store_ctx(x=x, res=res)
+        return res
+
+    def backward(self):
+        x, res = self.get_ctx('a','res')
+        if res.grad is not None:
+            g0 = (1 - res.data ** 2) * res.grad
+            x.accumulate_grad(g0)
 
 class OpMax(Op):
     def __init__(self):
         ### Add your implementation below and comment the following line.
-        raise NotImplementedError
+        super().__init__()
+
+    def forward(self, x: Tensor, xx:int):
+        res = Tensor(x.data.max(axis=xx))
+        self.store_ctx(x=x, xx=xx, res=res)
+        return res
+
+    # Check
+    def backward(self):
+        x, xx, res = self.get_ctx('x', 'xx', 'res')
+        if res.grad is not None:
+            mask = (x.data == res.data)
+            g0 = np.expand_dims(res.grad, xx)
+            g1 = np.repeat(g0, x.data.shape[xx], xx)
+            x.accumulate_grad(np.where(mask, g1, 0))
+
 
 class OpAvg(Op):
     # NOTE: Implementation of OpAvg is optional, it can be skipped if you wish
     def __init__(self):
         ### Add your implementation below and comment the following line.
         super().__init__()
+    
+    def forward(self, x: Tensor, xx: int):
+        res = Tensor(x.data.mean(axis=xx))
+        self.store_ctx(x=x, ax=xx, ret=res)
+        return res
+
+    def backward(self):
+        x, xx, res = self.get_ctx('x', 'xx', 'res')
+        if res.grad is not None :
+            g0 = np.expand_dims(res.grad, xx)
+            g1 = np.repeat(g0, x.data.shape[xx], xx)/x.data.shape[xx]
+            x.accumulate_grad(g1)
 
 
 class ComputationGraph:
@@ -365,8 +445,9 @@ class Initializer:
         """
 
         ### Add your implementation below and comment the following line.
-        raise NotImplementedError
-
+        std = gain * math.sqrt(6.0 / (shape[0] + shape[1]))
+        return np.random.uniform(-std,std,shape)
+        #raise NotImplementedError
 
 class Model:
     """
